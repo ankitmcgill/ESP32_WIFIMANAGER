@@ -53,19 +53,12 @@
 #include "esp_log.h"
 #include "sdkconfig.h"
 
-/*
-#define ESP32_WIFIMANAGER_LOG(format, ...) \
-            if(s_debug_on) \
-            { \   
-                ESP_LOGI(ESP32_WIFIMANAGER_TAG, format, ##__VA_ARGS__);\
-            }
-*/
-
 #define ESP32_SSID_HARDCODED
 #define ESP32_CONFIG_SMARTCONFIG
 
 #define ESP32_WIFIMANAGER_TAG                       "ESP32:WIFIMANAGER"
 #define ESP32_WIFIMANAGER_WIFI_RETRY_COUNT          (3)
+#define ESP32_WIFIMANAGER_WIFI_CONNECT_CHECK_MS     (4000)
 
 #define ESP32_WIFIMANAGER_STATUS_LED_TOGGLE_MS      (200)
 
@@ -88,14 +81,17 @@
 
 typedef enum
 {
-    ESP32_WIFIMANAGER_MODE_RTOS = 0,
-    ESP32_WIFIMANAGER_MODE_NORTOS
-}esp32_wifimanager_mode_t;
+    ESP32_WIFIMANAGER_STATE_INITIALIZE = 0,
+    ESP32_WIFIMANAGER_STATE_CONNECTING,
+    ESP32_WIFIMANAGER_STATE_CONNECTED,
+    ESP32_WIFIMANAGER_STATE_DISCONNECTED,
+    ESP32_WIFIMANAGER_STATE_CONNECTION_FAILED,
+    ESP32_WIFIMANAGER_STATE_IDLE
+}esp32_wifimanager_state_t;
 
 typedef enum
 {
-    ESP32_WIFIMANAGER_CREDENTIAL_SRC_AUTO = 0,
-    ESP32_WIFIMANAGER_CREDENTIAL_SRC_GPIO,
+    ESP32_WIFIMANAGER_CREDENTIAL_SRC_GPIO = 0,
     ESP32_WIFIMANAGER_CREDENTIAL_SRC_HARDCODED,
     ESP32_WIFIMANAGER_CREDENTIAL_SRC_INTERNAL,
     ESP32_WIFIMANAGER_CREDENTIAL_SRC_FLASH,
@@ -133,79 +129,19 @@ typedef enum
     ESP32_WIFIMANAGER_CONFIG_BLE
 }esp32_wifimanager_config_mode_t;
 
-typedef struct
-{
-    char* custom_field_name;
-    char* custom_field_label;
-}esp32_wifimanager_config_user_feild_t;
-
-typedef struct
-{
-    esp32_wifimanager_config_user_feild_t* custom_fields;
-    uint8_t custom_fields_count;
-}esp32_wifimanager_config_user_feild_group_t;
 //END CUSTOM VARIABLE STRUCTURES-------------------------------------------------
 
-/*typedef enum
-{
-    ESP32_WIFIMANAGER_TRIGGER_GPIO = 0,
-    ESP32_WIFIMANAGER_TRIGGER_NOCONNECTION
-}esp32_wifimanager_trigger_t;
-
-typedef enum
-{
-    ESP32_WIFIMANAGER_CONFIGURATION_SMARTCONFIG = 0,
-    ESP32_WIFIMANAGER_CONFIGURATION_BLE,
-}esp32_wifimanager_configuration_t;*/
-
-/*typedef enum
-{
-    ESP32_WIFIMANAGER_CREDENTIAL_SRC_AUTO = 0,
-    ESP32_WIFIMANAGER_CREDENTIAL_SRC_HARDCODED,
-    ESP32_WIFIMANAGER_CREDENTIAL_SRC_EEPROM,
-    ESP32_WIFIMANAGER_CREDENTIAL_SRC_FLASH
-}esp32_wifimanager_credential_src_t;*/
-
-/*typedef struct
-{
-    char* wifi_ssid;
-    char* wifi_password;
-}esp32_wifimanager_credential_hardcoded_t;
-
-typedef struct
-{
-    uint32_t wifi_ssid_aaddress;
-    uint32_t wifi_password_address;
-}esp32_wifimanager_credential_eeprom_t;
-
-typedef struct
-{
-    uint32_t wifi_ssid_aaddress;
-    uint32_t wifi_password_address;
-}esp32_wifimanager_credential_flash_t;*/
-
-
 void ESP32_WIFIMANAGER_SetDebug(uint8_t debug);
-void ESP32_WIFIMANAGER_SetParameters(esp32_wifimanager_mode_t mode,
-                                        esp32_wifimanager_credential_src_t input_mode,
+void ESP32_WIFIMANAGER_SetParameters(esp32_wifimanager_credential_src_t input_mode,
                                         esp32_wifimanager_config_mode_t config_mode,
                                         void* user_data,
-                                        esp32_wifimanager_config_user_feild_group_t* user_field_data,
                                         uint8_t gpio_led_pin,
                                         char* project_name);
 void ESP32_WIFIMANAGER_SetStatusLedType(esp32_wifimanager_status_led_type_t led_type);                                       
 void ESP32_WIFIMANAGER_SetGpioTriggerLevel(esp32_wifimanager_gpio_trigger_type_t level);
-void ESP32_WIFIMANAGER_SetCbFunctions(void (*wifi_connected_cb)(char**, bool));
+void ESP32_WIFIMANAGER_SetUserCbFunction(void (*wifi_connected_cb)(char**, bool));
 
 //OPERATION FUNCTIONS
-void ESP32_WIFIMANAGER_Start(void);
-
-/*void ESP32_WIFIMANAGER_Init(esp32_wifimanager_mode_t mode, 
-                                esp32_wifimanager_trigger_t trigger, 
-                                esp32_wifimanager_configuration_t configuration,
-                                esp32_wifimanager_credential_src_t cred_src,
-                                void* credentials);
-
-void ESP32_WIFIMANAGER_Start(void);*/
+void ESP32_WIFIMANAGER_Mainiter(void);
 
 #endif

@@ -50,6 +50,7 @@
 #include "ESP32_WIFIMANAGER.h"
 #include "ESP32_GPIO.h"
 #include "ESP32_TIMER.h"
+#include "esp_smartconfig.h"
 #include "esp_event_loop.h"
 #include "esp_event.h"
 #include "esp_wifi.h"
@@ -61,12 +62,11 @@
 static bool s_debug_on;
 
 //OPERATION RELATED
-static esp32_wifimanager_mode_t s_operating_mode;
+static esp32_wifimanager_state_t s_state;
 static volatile bool s_wifi_connected;
 static volatile uint8_t s_wifi_attempt_count;
 
-static esp32_wifimanager_credential_src_t s_esp32_wifimanager_credential_src;
-static esp32_wifimanager_config_mode_t s_esp32_wifimanager_config_mode;
+static wifi_config_t s_station_config;
 
 //GPIO RELATED
 static uint8_t s_esp32_wifimanager_gpio_led;
@@ -75,35 +75,26 @@ static esp32_wifimanager_status_led_type_t s_esp32_wifimanager_led_idle_level;
 static uint8_t s_esp32_wifimanager_gpio_trigger_pin;
 static esp32_wifimanager_gpio_trigger_type_t s_esp32_wifimanager_gpio_trigger_type;
 
-//TIMER RELATED
-
-//WEBCONFIG HTML DATA RELATED
-static char* s_esp32_wifimanagger_project_name;
+//CREDENTIAL SRC & CONFIG MODE RELATED
+static esp32_wifimanager_credential_src_t s_esp32_wifimanager_credential_src;
+static esp32_wifimanager_config_mode_t s_esp32_wifimanager_config_mode;
 
 //SSID RELATED
 static esp32_wifimanager_credential_hardcoded_t s_esp32_wifimanager_ssid_hardcoded_details;
 static esp32_wifimanager_credential_external_storage_t s_esp32_wifimanager_eeprom_flash_details;
 
-//INTERNAL FUNCTIONS
-static bool s_esp32_wifimanager_check_valid_stationconfig(void);
-
 //CB FUNCTIONS
 static void (*s_esp32_wifimanager_wifi_connected_user_cb)(char**, bool);
 
 //INTERNAL FUNCTIONS
-static void s_esp32_wifimanager_core_task(void);
+static void s_esp32_wifimanager_intialize(void);
+static bool s_esp32_wifimanager_connecting(void);
+static void s_esp32_wifimanager_connected(void);
+static void s_esp32_wifimanager_disconnected(void);
+static void s_esp32_wifimanager_connection_failed(void);
+
 static void s_esp32_wifimanager_led_toggle_cb(void* pArg);
-//static void s_esp32_wifimanager_wifi_connect_timer_cb(void* pArg);
-static void s_esp32_wifimanager_wifi_event_handler_cb(system_event_t* event);
-//static void s_esp32_wifimanager_wifi_start_ssid_configuration(void);
-
-//static void s_esp32_wifimanager_wifi_start_connection_process(struct station_config* sconfig);
-//static void s_esp32_wifimanager_wifi_start_softap(void);
-//static void s_esp32_wifimanager_tcp_server_path_config_cb(void);
-//static void s_esp32_wifimanager_tcp_server_post_data_cb(char* data, uint16_t len, uint8_t post_flag);
-static bool s_esp32_wifimanager_connect(void);
-static void s_esp32_wifimanager_start_smartconfig(void);
-
+static void s_esp32_wifimanager_wifi_connect_check_cb(void* pArg);
 static esp_err_t s_esp32_wifimanager_wifi_evt_handler(void* ctx, system_event_t* evt);
 
 void ESP32_WIFIMANAGER_SetDebug(uint8_t debug)
@@ -112,32 +103,31 @@ void ESP32_WIFIMANAGER_SetDebug(uint8_t debug)
     
     s_debug_on = debug;
 
-    ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Debug = %u", s_debug_on);
+    ets_printf(ESP32_WIFIMANAGER_TAG" : Debug = %u\n", s_debug_on);
 }
 
-void ESP32_WIFIMANAGER_SetParameters(esp32_wifimanager_mode_t mode,
-                                        esp32_wifimanager_credential_src_t input_mode,
+void ESP32_WIFIMANAGER_SetParameters(esp32_wifimanager_credential_src_t input_mode,
                                         esp32_wifimanager_config_mode_t config_mode,
                                         void* user_data,
-                                        esp32_wifimanager_config_user_feild_group_t* user_field_data,
                                         uint8_t gpio_led_pin,
                                         char* project_name)
 {
     //ESP32 WIFIMANAGER SET PARAMETERS
 
-    s_operating_mode = mode;
+    s_state = ESP32_WIFIMANAGER_STATE_INITIALIZE;
+
     s_esp32_wifimanager_credential_src = input_mode;
     s_esp32_wifimanager_config_mode = config_mode;
-
     s_esp32_wifimanager_gpio_led = gpio_led_pin;
 
+    //INIT OPERATIONAL PARAMETERS
     s_wifi_attempt_count = 0;
     s_wifi_connected = false;
 
     switch(s_esp32_wifimanager_credential_src)
-    {
+    { 
         case ESP32_WIFIMANAGER_CREDENTIAL_SRC_GPIO:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Input SRC = GPIO");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : Input SRC = GPIO\n");
             s_esp32_wifimanager_gpio_trigger_pin = *(uint8_t*)user_data;
             //SET TRIGGER GPIO AS INPUT
             ESP32_GPIO_SetDirection(s_esp32_wifimanager_gpio_trigger_pin,
@@ -145,7 +135,7 @@ void ESP32_WIFIMANAGER_SetParameters(esp32_wifimanager_mode_t mode,
             break;
         
         case ESP32_WIFIMANAGER_CREDENTIAL_SRC_HARDCODED:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Input SRC = HARDCODED");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : Input SRC = HARDCODED\n");
             s_esp32_wifimanager_ssid_hardcoded_details.ssid_name= 
                 ((esp32_wifimanager_credential_hardcoded_t*)user_data)->ssid_name;
             s_esp32_wifimanager_ssid_hardcoded_details.ssid_pwd= 
@@ -153,11 +143,12 @@ void ESP32_WIFIMANAGER_SetParameters(esp32_wifimanager_mode_t mode,
             break;
         
         case ESP32_WIFIMANAGER_CREDENTIAL_SRC_INTERNAL:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Input SRC = INTERNAL");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : Input SRC = INTERNAL\n");
+            //DO NOTHING. WILL TAKE CARE OF IT LATER ON
             break;
         
         case ESP32_WIFIMANAGER_CREDENTIAL_SRC_FLASH:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Input SRC = EXTERNAL FLASH");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : Input SRC = EXTERNAL FLASH\n");
             s_esp32_wifimanager_eeprom_flash_details.ssid_name_addr = 
                 ((esp32_wifimanager_credential_external_storage_t*)user_data)->ssid_name_addr;
             s_esp32_wifimanager_eeprom_flash_details.ssid_pwd_addr = 
@@ -165,7 +156,7 @@ void ESP32_WIFIMANAGER_SetParameters(esp32_wifimanager_mode_t mode,
             break;
         
         case ESP32_WIFIMANAGER_CREDENTIAL_SRC_EEPROM:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Input SRC = EXTERNAL EEPROM");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : Input SRC = EXTERNAL EEPROM\n");
             s_esp32_wifimanager_eeprom_flash_details.ssid_name_addr = 
                 ((esp32_wifimanager_credential_external_storage_t*)user_data)->ssid_name_addr;
             s_esp32_wifimanager_eeprom_flash_details.ssid_pwd_addr = 
@@ -173,28 +164,114 @@ void ESP32_WIFIMANAGER_SetParameters(esp32_wifimanager_mode_t mode,
             break;
         
         default:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Input SRC = INVALID");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : Input SRC = INVALID\n");
             break;
     }
 
     switch(s_esp32_wifimanager_config_mode)
     {
         case ESP32_WIFIMANAGER_CONFIG_SMARTCONFIG:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Config Mode = SMARTCONFIG");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : Config Mode = SMARTCONFIG\n");
             break;
         
         case ESP32_WIFIMANAGER_CONFIG_WEBCONFIG:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Config Mode = WEBCONFIG");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : Config Mode = WEBCONFIG\n");
             break;
         
         case ESP32_WIFIMANAGER_CONFIG_BLE:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Config Mode = BLE");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : Config Mode = BLE\n");
             break;
         
         default:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Config Mode = INVALID");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : Config Mode = INVALID\n");
             break;
     }
+}
+
+void ESP32_WIFIMANAGER_SetStatusLedType(esp32_wifimanager_status_led_type_t led_type)
+{
+    //SET STATUS LED TYPE
+
+    s_esp32_wifimanager_led_idle_level = led_type;
+
+    if(s_debug_on)
+    {
+        ets_printf(ESP32_WIFIMANAGER_TAG" : Status LED idle level = %u\n", led_type);
+    }
+}
+
+void ESP32_WIFIMANAGER_SetGpioTriggerLevel(esp32_wifimanager_gpio_trigger_type_t level)
+{
+    //SET GPIO TRIGGER LEVEL TYPE
+
+    s_esp32_wifimanager_gpio_trigger_type = level;
+    if(s_debug_on)
+    {
+        ets_printf(ESP32_WIFIMANAGER_TAG" : GPIO trigger type = %u\n", level);
+    }
+}
+
+void ESP32_WIFIMANAGER_SetUserCbFunction(void (*wifi_connected_cb)(char**, bool))
+{
+    //SET WIFI CONNECT CB FN
+
+    if(wifi_connected_cb != NULL)
+    {
+        s_esp32_wifimanager_wifi_connected_user_cb = wifi_connected_cb;
+    }
+}
+
+
+void ESP32_WIFIMANAGER_Mainiter(void)
+{
+    switch (s_state)
+    {
+        case  ESP32_WIFIMANAGER_STATE_INITIALIZE:
+            ets_printf(ESP32_WIFIMANAGER_TAG" : ESP32_WIFIMANAGER_STATE_INITIALIZE\n");
+            s_esp32_wifimanager_intialize();
+            s_state = ESP32_WIFIMANAGER_STATE_CONNECTING;
+            break;
+
+        case ESP32_WIFIMANAGER_STATE_CONNECTING:
+            ets_printf(ESP32_WIFIMANAGER_TAG" : ESP32_WIFIMANAGER_STATE_CONNECTING\n");
+            if(!s_esp32_wifimanager_connecting())
+            {
+                s_state = ESP32_WIFIMANAGER_STATE_CONNECTION_FAILED;
+                break;
+            }
+            s_state = ESP32_WIFIMANAGER_STATE_IDLE;
+            break;
+
+        case ESP32_WIFIMANAGER_STATE_CONNECTED:
+            ets_printf(ESP32_WIFIMANAGER_TAG" : ESP32_WIFIMANAGER_STATE_CONNECTED\n");
+            s_esp32_wifimanager_connected();
+            s_state = ESP32_WIFIMANAGER_STATE_IDLE;
+            break;
+
+        case ESP32_WIFIMANAGER_STATE_DISCONNECTED:
+            ets_printf(ESP32_WIFIMANAGER_TAG" : ESP32_WIFIMANAGER_STATE_DISCONNECTED\n");
+            s_esp32_wifimanager_disconnected();
+            s_state = ESP32_WIFIMANAGER_STATE_IDLE;
+            break;
+
+        case ESP32_WIFIMANAGER_STATE_CONNECTION_FAILED:
+            ets_printf(ESP32_WIFIMANAGER_TAG" : ESP32_WIFIMANAGER_STATE_CONNECTION_FAILED\n");
+            s_esp32_wifimanager_connection_failed();
+            s_state = ESP32_WIFIMANAGER_STATE_IDLE;
+            break;
+        
+        case ESP32_WIFIMANAGER_STATE_IDLE:
+            //DO NOTHING
+            break;
+        
+        default:
+            break;
+    }
+}
+
+static void s_esp32_wifimanager_intialize(void)
+{
+    //INTIALIZE ESP32 WIFIMANAGER MODULE
 
     //SET LED GPIO AS OUTPUT
     ESP32_GPIO_SetDirection(s_esp32_wifimanager_gpio_led, GPIO_DIRECTION_OUTPUT);
@@ -211,137 +288,57 @@ void ESP32_WIFIMANAGER_SetParameters(esp32_wifimanager_mode_t mode,
     ESP32_TIMER_SetInterruptCb(TIMER_GROUP0,
                             TIMER0,
                             ESP32_TIMER_MS_TO_CNT_VALUE(ESP32_WIFIMANAGER_STATUS_LED_TOGGLE_MS, 2),
-                            s_esp32_wifimanager_led_toggle_cb);
+                            s_esp32_wifimanager_led_toggle_cb,
+                            NULL);
 
-    if(s_debug_on)
-    {
-        ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Initialized (%u, %u, %u)", s_operating_mode,
-                                                                s_esp32_wifimanager_credential_src,
-                                                                s_esp32_wifimanager_config_mode);
-    }
-}
-
-void ESP32_WIFIMANAGER_SetStatusLedType(esp32_wifimanager_status_led_type_t led_type)
-{
-    //SET STATUS LED TYPE
-
-    s_esp32_wifimanager_led_idle_level = led_type;
-
-    if(s_debug_on)
-    {
-        ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Status LED idle level = %u", led_type);
-    }
-}
-
-void ESP32_WIFIMANAGER_SetGpioTriggerLevel(esp32_wifimanager_gpio_trigger_type_t level)
-{
-    //SET GPIO TRIGGER LEVEL TYPE
-
-    s_esp32_wifimanager_gpio_trigger_type = level;
-    if(s_debug_on)
-    {
-        ESP_LOGI(ESP32_WIFIMANAGER_TAG, "GPIO trigger type = %u", level);
-    }
-}
-
-void ESP32_WIFIMANAGER_SetCbFunctions(void (*wifi_connected_cb)(char**, bool))
-{
-    //SET WIFI CONNECT CB FN
-
-    if(wifi_connected_cb != NULL)
-    {
-        s_esp32_wifimanager_wifi_connected_user_cb = wifi_connected_cb;
-    }
-}
-
-void ESP32_WIFIMANAGER_Start(void)
-{
-    //START ESP32 WIFIMANAGER
-    //CREATE TASK IF RTOS MODE ELSE SIMPLE EXECUTE CODE
-
-    if(s_operating_mode == ESP32_WIFIMANAGER_MODE_RTOS)
-    {
-        //RTOS MODE
-        if(s_debug_on)
-        {
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "RTOS Mode");
-        }
-
-        //CREATE A RTOS TASK AND SET TO RUNNING
-    }
-    else if(s_operating_mode == ESP32_WIFIMANAGER_MODE_NORTOS)
-    {
-        //NON RTOS MODE
-        if(s_debug_on)
-        {
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "NON RTOS Mode");
-        }
-
-        //SIMPLE CALL THE CORE FUNCTION
-        s_esp32_wifimanager_core_task();
-    }
-}
-
-static void s_esp32_wifimanager_core_task(void)
-{
-    //ESP32 WIFIMANAGER CORE TASK
-
-    if(s_debug_on)
-    {
-        ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Started");
-    }
-
+    //SET UP WIFI CONNECT CHECK TIMER
+    ESP32_TIMER_Initialize(TIMER_GROUP0,
+                            TIMER1,
+                            true,
+                            TIMER_DIRECTION_UP,
+                            true,
+                            2);
+    ESP32_TIMER_SetInterruptCb(TIMER_GROUP0,
+                            TIMER1,
+                            ESP32_TIMER_MS_TO_CNT_VALUE(ESP32_WIFIMANAGER_WIFI_CONNECT_CHECK_MS, 2),
+                            s_esp32_wifimanager_wifi_connect_check_cb,
+                            (void*)&s_station_config);
+    
     //START LED FLASHING TIMER
     ESP32_TIMER_Start(TIMER_GROUP0, TIMER0);
 
-    //CHECK FOR TRIGGER
-    //IF TRIGGER = GPIO DO CHECK RIGHT NOW
-    //IF TRIGGER = NOCONNECTION, LET IT PROCEED TO CONNECT TO WIFI
-    if(s_esp32_wifimanager_credential_src == ESP32_WIFIMANAGER_CREDENTIAL_SRC_GPIO)
-    {
-        //CHECK IF GPIO ACTIVATED
+    //START WIFI CONNECT CHECK TIMER
+    ESP32_TIMER_Start(TIMER_GROUP0, TIMER1);
 
-        //START SMARTCONFIG
-        s_esp32_wifimanager_start_smartconfig();
-    }
-    
-    wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
-    
     //INITIALIZE ESP32 WIFI STACK
+    wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&config);
     esp_wifi_set_mode(WIFI_MODE_STA);
 
     //REGISTER WIFI EVENT HANDLER
     esp_event_loop_init(s_esp32_wifimanager_wifi_evt_handler, NULL);
-
-    //WIFI STATION CONFIG
-    wifi_config_t station_config;
-
+  
     switch(s_esp32_wifimanager_credential_src)
     {
-        case ESP32_WIFIMANAGER_CREDENTIAL_SRC_AUTO:
+        case ESP32_WIFIMANAGER_CREDENTIAL_SRC_GPIO:
+        case ESP32_WIFIMANAGER_CREDENTIAL_SRC_INTERNAL:
             //USED INTERNALLY SAVED WIFI CREDENTIALS
             //SET AUTOCONNECT STORAGE TO FLASH
             esp_wifi_set_storage(WIFI_STORAGE_FLASH);
             //SET WIFI AUTOCONNECT TO TRUE
             esp_wifi_set_auto_connect(true);
-            break;
-
-        case ESP32_WIFIMANAGER_CREDENTIAL_SRC_GPIO:
+            esp_wifi_get_config(WIFI_IF_STA, &s_station_config);
             break;
         
         case ESP32_WIFIMANAGER_CREDENTIAL_SRC_HARDCODED:
             //USE HARDCODED SUPPLIED WIFI CREDENTIALS
             //SET WIFI AUTOCONNECT TO FALSE
             esp_wifi_set_auto_connect(false);
-            strcpy((char * restrict)station_config.sta.ssid, 
+            strcpy((char * restrict)s_station_config.sta.ssid, 
                 s_esp32_wifimanager_ssid_hardcoded_details.ssid_name);
-            strcpy((char * restrict)station_config.sta.password,
+            strcpy((char * restrict)s_station_config.sta.password,
                 s_esp32_wifimanager_ssid_hardcoded_details.ssid_pwd);
-            station_config.sta.bssid_set = false;
-            break;
-        
-        case ESP32_WIFIMANAGER_CREDENTIAL_SRC_INTERNAL:
+            s_station_config.sta.bssid_set = false;
             break;
         
         case ESP32_WIFIMANAGER_CREDENTIAL_SRC_EEPROM:
@@ -360,20 +357,92 @@ static void s_esp32_wifimanager_core_task(void)
     }
 
     //SET CONFIGURATION
-    esp_wifi_set_config(WIFI_IF_STA, (wifi_config_t*)&station_config);
+    esp_wifi_set_config(WIFI_IF_STA, (wifi_config_t*)&s_station_config);
+
+    if(s_debug_on)
+    {
+        ets_printf(ESP32_WIFIMANAGER_TAG" : Initialized (%u, %u) led @ pin %u\n", s_esp32_wifimanager_credential_src,
+                                                                                    s_esp32_wifimanager_config_mode,
+                                                                                    s_esp32_wifimanager_gpio_led);
+    }
+}
+
+static bool s_esp32_wifimanager_connecting(void)
+{
+    //CONNECT TO WIFI
+
+    //CHECK FOR TRIGGER
+    //IF TRIGGER = GPIO DO CHECK RIGHT NOW
+    //IF TRIGGER = NOCONNECTION, LET IT PROCEED TO CONNECT TO WIFI
+    if(s_esp32_wifimanager_credential_src == ESP32_WIFIMANAGER_CREDENTIAL_SRC_GPIO)
+    {
+        //CHECK IF GPIO ACTIVATED
+
+        //START SMARTCONFIG
+        //s_esp32_wifimanager_start_smartconfig();
+    }
+
+    //CHECK FOR CONNECTION ATTEMPTS
+    if(s_wifi_attempt_count >= ESP32_WIFIMANAGER_WIFI_RETRY_COUNT)
+    {
+        //MAX ATTEMPT REACHED
+        ets_printf(ESP32_WIFIMANAGER_TAG" : Max connection attempts reached !\n");
+        return false;
+    }
+
+    ets_printf(ESP32_WIFIMANAGER_TAG" : Wifi connect attempt #%u\n", s_wifi_attempt_count);
+    s_wifi_attempt_count++;
 
     //START WIFI
     esp_wifi_start();
 
     //CONNECT TO WIFI
-    s_esp32_wifimanager_connect();
+    esp_wifi_connect();
+
+    return true;
+}
+
+static void s_esp32_wifimanager_connected(void)
+{
+    //WIFI CONNECTION OK
+
+    //STOP ALL TIMERS
+    ESP32_TIMER_Stop(TIMER_GROUP0, TIMER0);
+    ESP32_TIMER_Stop(TIMER_GROUP0, TIMER1);
+    //TURN LED ON
+    ESP32_GPIO_SetValue(s_esp32_wifimanager_gpio_led, true);
+    //CALL USER CB
+    if(s_esp32_wifimanager_wifi_connected_user_cb != NULL)
+    {
+        (*s_esp32_wifimanager_wifi_connected_user_cb)(NULL, true);
+    }
+}
+
+static void s_esp32_wifimanager_disconnected(void)
+{
+    //WIFI DISCONNECTED
+
+}
+
+static void s_esp32_wifimanager_connection_failed(void)
+{
+    //WIFI CONNECTION FAILED
+
+    //STOP ALL TIMERS
+    ESP32_TIMER_Stop(TIMER_GROUP0, TIMER0);
+    ESP32_TIMER_Stop(TIMER_GROUP0, TIMER1);
+    //TURN LED OFF
+    ESP32_GPIO_SetValue(s_esp32_wifimanager_gpio_led, false);
+    //CALL USER CB
+    if(s_esp32_wifimanager_wifi_connected_user_cb != NULL)
+    {
+        (*s_esp32_wifimanager_wifi_connected_user_cb)(NULL, false);
+    }
 }
 
 static void s_esp32_wifimanager_led_toggle_cb(void* pArg)
 {
     //LED TOGGLE TIMER CB FUNCTION
-    //THIS IS A CB FUNCTION FROM TIMER ISR
-    //TURN OFF ALL DEBUG PRINTFS !!!
 
     ESP32_GPIO_SetDebug(false);
     s_esp32_wifimanager_led_status = !s_esp32_wifimanager_led_status;
@@ -381,20 +450,20 @@ static void s_esp32_wifimanager_led_toggle_cb(void* pArg)
     ESP32_GPIO_SetDebug(true);
 }
 
-static bool s_esp32_wifimanager_connect(void)
+static void s_esp32_wifimanager_wifi_connect_check_cb(void* pArg)
 {
-    //CONNECT TO WIFI NETWORK
+    //WIFI CONNECTED CHECK CB
 
-    if(s_wifi_attempt_count >= ESP32_WIFIMANAGER_WIFI_RETRY_COUNT)
+    if(s_wifi_connected)
     {
-        ESP_LOGE(ESP32_WIFIMANAGER_TAG, "Wifi connect max retries done !");
-        return false;
+        //DO NOTHING
+        //STATE MACHINE WILL TAKE CARE OF IT      
+        return;
     }
 
-    //CONNECT TO WIFI
-    ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Wifi connect retry %u", s_wifi_attempt_count);
-    esp_wifi_connect();
-    return true;
+    //WIFI NOT CONNECTED
+    //SET STATE TO ESP32_WIFIMANAGER_STATE_CONNECTING
+    s_state = ESP32_WIFIMANAGER_STATE_CONNECTING;
 }
 
 static void s_esp32_wifimanager_start_smartconfig(void)
@@ -409,91 +478,46 @@ static esp_err_t s_esp32_wifimanager_wifi_evt_handler(void* ctx, system_event_t*
     switch(evt->event_id)
     {
         case SYSTEM_EVENT_WIFI_READY:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "EVT_WIFI_READY");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : EVT_WIFI_READY\n");
             break;
         
         case SYSTEM_EVENT_SCAN_DONE:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "EVT_SCAN_DONE");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : EVT_SCAN_DONE\n");
             break;
         
         case SYSTEM_EVENT_STA_START:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "EVT_STA_START");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : EVT_STA_START\n");
             break;
 
         case SYSTEM_EVENT_STA_CONNECTED:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "EVT_STA_CONNECTED");
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "SSID : %s", 
+            ets_printf(ESP32_WIFIMANAGER_TAG" : EVT_STA_CONNECTED\n");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : SSID : %s\n", 
                                             (evt->event_info).connected.ssid);
             break;
         
         case SYSTEM_EVENT_STA_DISCONNECTED:
             //CAN HAPPEN IF THE ESP DISCONNECTS FROM AN ALREADY CONNECTED AP
-            //OR IF IT WAS NOT ABLE TO CONNECT TO IT IN THE FIRST PLACE
-            //(BECAUSE OF WRONG CREDENTIALS)
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "EVT_STA_DISCONNECTED");
-            if(s_wifi_connected)
-            {
-                //ESP WAS CONNECTED BEFORE
-                //RESTART CONNECTION CYCLE FROM START
-                ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Disconnected from a connected AP");
-                s_wifi_connected = false;
-                //RESET ATTEMPT COUNT
-                s_wifi_attempt_count = 0;
-                s_esp32_wifimanager_connect();
-            }
-            else
-            {
-                //ESP WAS NOT ABLE TO CONNECT
-                ESP_LOGI(ESP32_WIFIMANAGER_TAG, "Not able to connect to AP");
-                s_wifi_connected = false;
-                s_wifi_attempt_count++;
-                if(!s_esp32_wifimanager_connect())
-                {
-                    //MAX WIFI ATTEMPT EXPIRED
-                    //CALL USERCB WITH FALSE
-                    //TURN OFF LED TIMER
-                    ESP32_TIMER_Stop(TIMER_GROUP0, TIMER0);
-                    //SET LED TO OFF
-                    ESP32_GPIO_SetValue(s_esp32_wifimanager_gpio_led, false);
-                    //CALL USER CB FUNCTION IF NOT NULL
-                    (*s_esp32_wifimanager_wifi_connected_user_cb)(NULL, false);
-                }
-            }
+            //OR IF IT WAS NOT ABLE TO CONNECT TO IT IN THE FIRST PLACE (ONLY IF
+            //SEND THE WRONG PASSWORD TO EXITING SSID)
+            //IT COULD HAPPEN THAT STA_DISCONNECT IS NEVER CALLED SO WE NEED
+            //THE WIFI CONNECTED TIMER ALSO
+            ets_printf(ESP32_WIFIMANAGER_TAG" : EVT_STA_DISCONNECTED\n");
+            s_state = ESP32_WIFIMANAGER_STATE_DISCONNECTED;
             break;
         
         case SYSTEM_EVENT_STA_GOT_IP:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "EVT_STA_GOT_IP");
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "IP : %u.%u.%u.%u",
+            ets_printf(ESP32_WIFIMANAGER_TAG" : EVT_STA_GOT_IP\n");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : IP : %u.%u.%u.%u\n",
                                         ((evt->event_info).got_ip.ip_info.ip.addr & 0x000000FF),
                                         ((evt->event_info).got_ip.ip_info.ip.addr & 0x0000FF00) >> 8,
                                         ((evt->event_info).got_ip.ip_info.ip.addr & 0x00FF0000) >> 16,
                                         ((evt->event_info).got_ip.ip_info.ip.addr & 0xFF000000) >> 24);
-            s_wifi_connected = true;
-            //TURN OFF LED TIMER
-            ESP32_TIMER_Stop(TIMER_GROUP0, TIMER0);
-            //SET LED TO SOLID
-            ESP32_GPIO_SetValue(s_esp32_wifimanager_gpio_led, true);
-            //CALL USER CB FUNCTION IF NOT NULL
-            (*s_esp32_wifimanager_wifi_connected_user_cb)(NULL, true);
+            s_state = ESP32_WIFIMANAGER_STATE_CONNECTED;
             break;
         
         default:
-            ESP_LOGI(ESP32_WIFIMANAGER_TAG, "EVT_UNKNOWN");
+            ets_printf(ESP32_WIFIMANAGER_TAG" : EVT_UNKNOWN\n");
             break;
     }
     return ESP_OK;
-}
-
-static bool s_esp32_wifimanager_check_valid_stationconfig(void)
-{
-    //CHECK IF PROVIDED STATION CONFIG IS VALID
-    /*
-    if(config->ssid[0] < 48 || 
-        config->ssid[0] > 126 || 
-        config->password[0] < 48 || 
-        config->password[0] > 126)
-    {
-        return false;
-    }*/
-    return true;
 }
