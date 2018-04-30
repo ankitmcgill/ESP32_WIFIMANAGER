@@ -54,6 +54,7 @@
 #include "esp_event_loop.h"
 #include "esp_event.h"
 #include "esp_wifi.h"
+#include "esp_smartconfig.h"
 #include "esp_err.h"
 #include <string.h>
 
@@ -96,6 +97,7 @@ static void s_esp32_wifimanager_connection_failed(void);
 static void s_esp32_wifimanager_led_toggle_cb(void* pArg);
 static void s_esp32_wifimanager_wifi_connect_check_cb(void* pArg);
 static esp_err_t s_esp32_wifimanager_wifi_evt_handler(void* ctx, system_event_t* evt);
+static void s_esp32_wifimanager_smartconfig_cb(smartconfig_status_t status, void *pdata);
 
 void ESP32_WIFIMANAGER_SetDebug(uint8_t debug)
 {
@@ -431,12 +433,36 @@ static void s_esp32_wifimanager_connection_failed(void)
     //STOP ALL TIMERS
     ESP32_TIMER_Stop(TIMER_GROUP0, TIMER0);
     ESP32_TIMER_Stop(TIMER_GROUP0, TIMER1);
+    
     //TURN LED OFF
     ESP32_GPIO_SetValue(s_esp32_wifimanager_gpio_led, false);
+    
     //CALL USER CB
     if(s_esp32_wifimanager_wifi_connected_user_cb != NULL)
     {
         (*s_esp32_wifimanager_wifi_connected_user_cb)(NULL, false);
+    }
+
+    //START CONFIGURATION PROCES
+    switch(s_esp32_wifimanager_config_mode)
+    {
+        case ESP32_WIFIMANAGER_CONFIG_SMARTCONFIG:
+            //START SMARTCONFIG
+            esp_smartconfig_set_type(SC_TYPE_ESPTOUCH);
+            esp_smartconfig_start(s_esp32_wifimanager_smartconfig_cb);
+            break;
+        
+        case ESP32_WIFIMANAGER_CONFIG_WEBCONFIG:
+            ets_printf(ESP32_WIFIMANAGER_TAG" : Config Mode = WEBCONFIG\n");
+            break;
+        
+        case ESP32_WIFIMANAGER_CONFIG_BLE:
+            ets_printf(ESP32_WIFIMANAGER_TAG" : Config Mode = BLE\n");
+            break;
+        
+        default:
+            ets_printf(ESP32_WIFIMANAGER_TAG" : Config Mode = INVALID\n");
+            break;
     }
 }
 
@@ -464,11 +490,6 @@ static void s_esp32_wifimanager_wifi_connect_check_cb(void* pArg)
     //WIFI NOT CONNECTED
     //SET STATE TO ESP32_WIFIMANAGER_STATE_CONNECTING
     s_state = ESP32_WIFIMANAGER_STATE_CONNECTING;
-}
-
-static void s_esp32_wifimanager_start_smartconfig(void)
-{
-    //START SMARTCONFIG FOR WIFI CONFIGURATION
 }
 
 static esp_err_t s_esp32_wifimanager_wifi_evt_handler(void* ctx, system_event_t* evt)
@@ -520,4 +541,43 @@ static esp_err_t s_esp32_wifimanager_wifi_evt_handler(void* ctx, system_event_t*
             break;
     }
     return ESP_OK;
+}
+
+static void s_esp32_wifimanager_smartconfig_cb(smartconfig_status_t status, void *pdata)
+{
+    //ESP32 SMARTCOFIG EVENT CB FUNCTION
+
+    switch(status)
+    {
+        case SC_STATUS_WAIT:
+            ets_printf(ESP32_WIFIMANAGER_TAG" : SMARTCONFIG: SC_STATUS_WAIT\n");
+            break;
+        
+        case SC_STATUS_FIND_CHANNEL:
+            ets_printf(ESP32_WIFIMANAGER_TAG" : SMARTCONFIG: SC_STATUS_FIND_CHANNEL\n");
+            break;
+        
+        case SC_STATUS_GETTING_SSID_PSWD:
+            ets_printf(ESP32_WIFIMANAGER_TAG" : SMARTCONFIG: SC_STATUS_GETTING_SSID_PSWD\n");
+            break;
+
+        case SC_STATUS_LINK:
+            ets_printf(ESP32_WIFIMANAGER_TAG" : SMARTCONFIG: SC_STATUS_LINK\n");
+            wifi_config_t *wifi_config = pdata;
+            ets_printf(ESP32_WIFIMANAGER_TAG" : SMARTCONFIG: SSID = %s\n", wifi_config->sta.ssid);
+            ets_printf(ESP32_WIFIMANAGER_TAG" : SMARTCONFIG: PASSWORD = %s\n", wifi_config->sta.password);
+            esp_wifi_disconnect();
+            esp_wifi_set_config(ESP_IF_WIFI_STA, wifi_config);
+            esp_wifi_connect();
+            break;
+
+        case SC_STATUS_LINK_OVER:
+            if(pdata != NULL)
+            {
+                uint8_t ip[4] = {0};
+                memcpy(ip, (uint8_t* )pdata, 4);
+                ets_printf(ESP32_WIFIMANAGER_TAG" : SMARTCONFIG: IP = %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
+            }
+            break;
+    }
 }

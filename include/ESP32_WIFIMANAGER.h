@@ -53,8 +53,6 @@
 #include "esp_log.h"
 #include "sdkconfig.h"
 
-#define ESP32_SSID_HARDCODED
-#define ESP32_CONFIG_SMARTCONFIG
 
 #define ESP32_WIFIMANAGER_TAG                       "ESP32:WIFIMANAGER"
 #define ESP32_WIFIMANAGER_WIFI_RETRY_COUNT          (3)
@@ -66,18 +64,6 @@
 #define ESP32_WIFIMANAGER_SSID_LEN                  (32)
 #define ESP32_WIFIMANAGER_SSID_PWD_LEN              (64)
 #define ESP32_WIFIMANAGER_CUSTOM_FIELD_MAX_COUNT    (5)
-
-#if defined(ESP32_SSID_FLASH)
-    #error "ESP32:WIFIMANAGER - SSID_FLASH not supported"
-#elif defined(ESP32_SSID_EEPROM)
-    #error "ESP32:WIFIMANAGER - SSID_EEPROM not supported"
-#elif defined(ESP32_CONFIG_SMARTCONFIG)
-    //#include "ESP32_SMARTCONFIG.h"
-#elif defined(ESP32_CONFIG_WEBCONFIG)
-    #error "ESP32:WIFIMANAGER - CONFIG_WEBCONFIG not supported"
-#elif defined(ESP32_CONFIG_BLE)
-    #error "ESP32:WIFIMANAGER - CONFIG_BLE not supported"
-#endif
 
 typedef enum
 {
