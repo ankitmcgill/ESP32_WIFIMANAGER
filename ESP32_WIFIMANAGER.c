@@ -131,6 +131,7 @@ void ESP32_WIFIMANAGER_SetParameters(esp32_wifimanager_credential_src_t input_mo
         case ESP32_WIFIMANAGER_CREDENTIAL_SRC_GPIO:
             ets_printf(ESP32_WIFIMANAGER_TAG" : Input SRC = GPIO\n");
             s_esp32_wifimanager_gpio_trigger_pin = *(uint8_t*)user_data;
+            ets_printf(ESP32_WIFIMANAGER_TAG" : GPIO pin = %u\n", s_esp32_wifimanager_gpio_trigger_pin);
             //SET TRIGGER GPIO AS INPUT
             ESP32_GPIO_SetDirection(s_esp32_wifimanager_gpio_trigger_pin,
                                         GPIO_DIRECTION_INPUT);
@@ -379,9 +380,19 @@ static bool s_esp32_wifimanager_connecting(void)
     if(s_esp32_wifimanager_credential_src == ESP32_WIFIMANAGER_CREDENTIAL_SRC_GPIO)
     {
         //CHECK IF GPIO ACTIVATED
-
-        //START SMARTCONFIG
-        //s_esp32_wifimanager_start_smartconfig();
+        ets_printf(ESP32_WIFIMANAGER_TAG" : Checking trigger gpio level\n");
+        uint8_t retval;
+        if(ESP32_GPIO_GetValue(s_esp32_wifimanager_gpio_trigger_pin, &retval) == ESP_OK && 
+            retval == s_esp32_wifimanager_gpio_trigger_type)
+        {
+            //START CONFIGURATION PROCESS
+            //RETURN FALSE TO GO INTO FAILED STATE AND START CONFIGURATION
+            //MANUALLY START WIFI AS WIFI IS NOT STARTED YET 
+            //AND SMARTCONFIG NEEDS IT TO BE STARTED
+            ets_printf(ESP32_WIFIMANAGER_TAG" : gpio triggered !!\n");
+            esp_wifi_start();
+            return false;
+        }
     }
 
     //CHECK FOR CONNECTION ATTEMPTS
